@@ -1,0 +1,10 @@
+[package]
+name = "codecrafters-redis"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"                                     # error handling
+bytes = "1"                                      # byte buffers
+thiserror = "2"                                  # error types
+tokio = { version = "1", features = ["full"] }   # async networking (optional: std::net works too)
