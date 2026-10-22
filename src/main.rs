@@ -9,18 +9,24 @@ fn main() {
      for stream in listener.incoming() {
          match stream {
              Ok(mut tcp_stream) => {
+                loop{
                 let mut buf = [0u8; 512];
                  match tcp_stream.read(&mut buf){
                     Ok(n) => {
+                        if n == 0 {
+                            break;
+                            }
+
                         let message = &buf[..n];
                         let pong = String::from("+PONG\r\n");
 
                         tcp_stream.write_all(pong.as_bytes()).unwrap();
-
+                    
 
 
                     }
                     Err(error) => {}
+                }
                 }
 
             },
