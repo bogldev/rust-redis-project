@@ -1,10 +1,13 @@
 #![allow(unused_imports)]
-use std::{io::{Read, Write, Result}, net::TcpListener};
+use std::{io::{Read, Write, Result}, net::TcpListener, sync::{Arc, Mutex}};
+use std::collections::HashMap;
 use bytes::{Buf,BytesMut};
 
 const DELINEATOR:&[u8] = b"\r\n";
 const COMMAND_FRONT: &[u8] = b"*";
 const ARG_FRONT: &[u8] = b"$";
+
+type Table = Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>;
 
 fn parse_number<'a>(buffer:&'a [u8], front_byte: &[u8], delineator: &[u8]) -> Option<(usize,&'a [u8])>{
     
@@ -17,13 +20,21 @@ fn parse_number<'a>(buffer:&'a [u8], front_byte: &[u8], delineator: &[u8]) -> Op
 
 
     let length = std::str::from_utf8(&length_buf[1..]).ok()?.parse::<usize>().ok()?;
-//    let m = buffer.windows(delineator.len()).position(|w| w == delineator)?;
-//    if m != 2 {
-//        return None;
-//    }
-
     Some((length, &remainder[2..]))
 }
+
+
+fn arg_to_bulk_string<W: Write>(stream: &mut W, buffer: &[u8]) -> Result<()>{
+
+                        stream.write_all(ARG_FRONT)?;
+                        stream.write_all(format!("{}", buffer.len()).as_bytes())?;
+                        stream.write_all(DELINEATOR)?;
+                        stream.write_all(buffer)?;
+                        stream.write_all(DELINEATOR)?;
+
+                        Ok(())
+}
+
 
 
 fn parse(buffer:&[u8]) -> Option<(Vec<Vec<u8>>, usize)>{
@@ -33,32 +44,24 @@ fn parse(buffer:&[u8]) -> Option<(Vec<Vec<u8>>, usize)>{
 
     let (num_args, mut args) = parse_command_number(buffer)?;
     let mut parsed_args:Vec<Vec<u8>> = vec![]; 
-    let mut total_length =  COMMAND_FRONT.len() + DELINEATOR.len() + (num_args.ilog10() + 1) as usize;
-    
+    let mut total_length =  COMMAND_FRONT.len() + DELINEATOR.len() + (if let Some(num) = num_args.checked_ilog10() {num + 1} else{1}) as usize;
+
     for _ in 0..num_args {
       let (length,args_temp) = parse_arg_number(args)?;
       let arg = args_temp.get(0..length)?;
       parsed_args.push(Vec::from(arg));
 
-    
 
-      //let m = &args_temp[length..].windows(DELINEATOR.len()).position(|w| w == DELINEATOR)?;
-    
-      //if *m != 0 {
-        //return None;
-      //}
-
-      total_length += ARG_FRONT.len() + 2*DELINEATOR.len() + (length.ilog10()  + 1) as usize + length;
+      total_length += ARG_FRONT.len() + 2*DELINEATOR.len() + (if let Some(num) = length.checked_ilog10() {num + 1} else{1}) as usize + length;
       args = &args_temp[(length+2)..];
 
     }
-
     Some((parsed_args, total_length))
 
 }
 
 
-fn handle_client(mut stream:std::net::TcpStream) -> Result<()>{ 
+fn handle_client(mut stream:std::net::TcpStream, instance: Table) -> Result<()>{ 
         let mut commands:BytesMut = BytesMut::new();
         loop{
                 let mut buf = [0u8; 512];
@@ -74,18 +77,45 @@ fn handle_client(mut stream:std::net::TcpStream) -> Result<()>{
                 {
                  b"ECHO" => {
                     if let Some(arg) = args.first() {
-                        stream.write_all(ARG_FRONT)?;
-                        stream.write_all(format!("{}", arg.len()).as_bytes())?;
-                        stream.write_all(DELINEATOR)?;
-                        stream.write_all(arg)?;
-                        stream.write_all(DELINEATOR)?;
+                        // TODO: create a bulk_string function to abstract out the ARG and
+                        // DELINEATORS
+                        
+                        arg_to_bulk_string(&mut stream, arg)?; 
                     }
 
 
                 }
                  b"PING" => {
-
                     stream.write_all(b"+PONG\r\n")?;
+                }
+                b"GET" => {
+                 if let Some(arg) = args.first() {
+                    {
+                        let hash_map = instance.lock().unwrap();
+                        match hash_map.get(arg).cloned() {
+                        Some(val) => {
+                                    arg_to_bulk_string(&mut stream, &val)?;
+                                }
+                        None => {
+                                    stream.write_all(b"$-1\r\n")?;
+                                } 
+                            }
+                        }
+                    }
+
+                }
+                b"SET" => {
+                if let (Some(key),Some(value)) = (args.first(),args.get(1)){
+                    
+                {
+                            let mut hash_map = instance.lock().unwrap();
+                            hash_map.insert(key.clone(),value.clone());
+                            stream.write_all(b"+OK")?;
+                            stream.write_all(DELINEATOR)?;
+                }
+
+                    }
+
 
                 }
                 _ => {}
@@ -99,12 +129,19 @@ fn handle_client(mut stream:std::net::TcpStream) -> Result<()>{
 
 fn main() -> Result<()> {
     
-    let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
 
-     for stream in listener.incoming() {
+    let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
+    
+    let  data_table: Table = Arc::new(Mutex::new(HashMap::new()));
+
+
+
+    for stream in listener.incoming() {
         let stream = stream?; 
-        std::thread::spawn(move || handle_client(stream));
+        let instance = Arc::clone(&data_table);
+        std::thread::spawn(move || handle_client(stream, instance));
     }
     
+
     Ok(())
 }
