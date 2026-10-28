@@ -193,7 +193,7 @@ fn handle_client(mut stream: std::net::TcpStream, instance: Table) -> Result<()>
                                 list.extend(Vec::from(values));
                                 let n = list.len();
                                 hash_map.insert(key.clone(), Entry{value: Value::List(list), expires: None});
-                                
+                               // TODO: change this so that it is easier to alter later
                                 stream.write_all(b":")?;
                                 stream.write_all(format!("{}",n).as_bytes())?;
                                 stream.write_all(DELINEATOR)?;
@@ -219,7 +219,35 @@ fn handle_client(mut stream: std::net::TcpStream, instance: Table) -> Result<()>
 
                     }
                 }
+          b"LRANGE" => {
+                    if let (Some(key), Some(start), Some(stop)) = (args.first(), args.get(1), args.get(2)){
+                        {
+                            let hash_map = instance.lock().unwrap();
+                            if let Some(value) = hash_map.get(key) && let Value::List(list) = &value.value && let Some(n) = std::str::from_utf8(start).unwrap_or("").parse::<usize>().ok() 
+                            && let Some(m) = std::str::from_utf8(stop).unwrap_or("").parse::<usize>().ok() && n < m + 1 && n < list.len(){
+                                stream.write_all(COMMAND_FRONT)?; 
+                                stream.write_all(format!("{}", (m+1).min(list.len()) - n).as_bytes())?; 
+                                stream.write_all(DELINEATOR)?;
 
+                                let safe_end = (m+1).min(list.len());
+                                for element in list.range(n..safe_end){ 
+                                    arg_to_bulk_string(&mut stream, element)?;
+                                }
+
+                            }
+                        else {
+                                stream.write_all(b"*0\r\n")?;
+                            }
+                        }
+
+
+                    }
+                        else {
+                            stream.write_all(b"*0\r\n")?;
+                        }
+
+
+            }
 
 
 
