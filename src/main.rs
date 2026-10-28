@@ -1,6 +1,6 @@
 #![allow(unused_imports)]
 use bytes::{Buf, BytesMut};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::{
     io::{Read, Result, Write},
     net::TcpListener,
@@ -13,8 +13,16 @@ const COMMAND_FRONT: &[u8] = b"*";
 const ARG_FRONT: &[u8] = b"$";
 
 #[derive(Clone, Debug)]
+enum Value {
+    String(Vec<u8>),
+    List(VecDeque<Vec<u8>>)
+}
+
+
+#[derive(Clone, Debug)]
 struct Entry {
-    value: Vec<u8>,
+    // TODO: value becomes Value
+    value: Value,
     expires: Option<Instant>,
 }
 
@@ -117,7 +125,16 @@ fn handle_client(mut stream: std::net::TcpStream, instance: Table) -> Result<()>
                                         stream.write_all(b"$-1\r\n")?;
                                     }
                                     _ => {
-                                        arg_to_bulk_string(&mut stream, &entry.value)?;
+
+                                        if let Value::String(string) = entry.value{
+                                        arg_to_bulk_string(&mut stream, &string)?;
+                                        }
+                                        else if let Value::List(list) = entry.value{
+                                        stream.write_all(b":")?;
+                                        stream.write_all(format!("{}", list.len()).as_bytes())?;
+                                        stream.write_all(DELINEATOR)?;
+                                        }
+
                                     }
                                 },
                                 None => {
@@ -154,9 +171,11 @@ fn handle_client(mut stream: std::net::TcpStream, instance: Table) -> Result<()>
                             };
 
                             let entry = Entry {
-                                value: value.clone(),
+                                value: Value::String(value.clone()),
                                 expires: expires_at,
                             };
+
+
 
                             hash_map.insert(key.clone(), entry);
 
@@ -165,6 +184,46 @@ fn handle_client(mut stream: std::net::TcpStream, instance: Table) -> Result<()>
                         }
                     }
                 }
+            b"RPUSH" => {
+                    if let (Some(key), Some(values)) = (args.first(), args.get(1..)) {
+                    {
+                            let mut hash_map = instance.lock().unwrap();
+                            if let Some(value) = hash_map.get(key) && let Value::List(mut list) = value.value.clone() {
+
+                                list.extend(Vec::from(values));
+                                let n = list.len();
+                                hash_map.insert(key.clone(), Entry{value: Value::List(list), expires: None});
+                                
+                                stream.write_all(b":")?;
+                                stream.write_all(format!("{}",n).as_bytes())?;
+                                stream.write_all(DELINEATOR)?;
+                                
+                            }
+                            else if let None = hash_map.get(key) {
+                                let mut new_list = VecDeque::new();
+                                new_list.extend(Vec::from(values));
+                                let n = new_list.len();
+                                hash_map.insert(key.clone(), Entry{value: Value::List(new_list), expires: None});
+
+                                stream.write_all(b":")?;
+                                stream.write_all(format!("{}",n).as_bytes())?;
+                                stream.write_all(DELINEATOR)?;
+                            
+                            }
+                            else{
+                                stream.write_all(b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n")?;
+                            }
+
+                        }
+
+
+                    }
+                }
+
+
+
+
+
                 _ => {}
             }
             commands.advance(length);
